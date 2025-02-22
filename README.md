@@ -16,3 +16,24 @@ If you need to use a different queue name from the workitem queue name, you can 
 ```
 https://github.com/openiap/pythonworkitemagent.git
 ```
+
+# Build and run
+Setup environment with micromamba and run using the following commands
+```bash
+micromamba create -y -n pythontest -f conda.yaml
+# or
+micromamba install -y -n pythontest -f conda.yaml
+python cli.py 
+```
+To run using default python installation, use the following commands
+```bash
+pip uninstall openiap-edge
+python -m pip cache purge
+pip install openiap-edge==0.0.26
+python cli.py 
+```
+github repository:
+
+```
+https://github.com/skadefro/pythontest.git 
+```
