@@ -1,7 +1,7 @@
 import asyncio, os, openiap, traceback, zlib, json, logging
 import random, time
 # If testing toward app.openiap.io you MUST update this to your own workitem queue name
-defaultwiq = "pyagent"
+defaultwiq = ""
 class Worker:
     async def __ProcessWorkitem(self, workitem, payload):
         logging.info(f"Processing workitem id {workitem._id} retry #{workitem.retries}")

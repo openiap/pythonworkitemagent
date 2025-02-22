@@ -9,9 +9,9 @@ When we get a message, we will pop a workitem of the workitem queue, and if one 
 we start processing it inside `__ProcessWorkitem` 
 We then update the state of the workitem to successful or retry, depending on the outcome of `__ProcessWorkitem`.
 
-When running inside an agent make sure the `queue` environment variable has been set to the name of the workitem queue you want to listen to.
+When running inside an agent make sure the `wiq` environment variable has been set to the name of the workitem queue you want to listen to.
 When running local, make sure to add this to your .env file.
-If you need to use a different queue name from the workitem queue name, you can set `wiq` to the name of the workitem queue.
+If you need to use a different queue name from the workitem queue name, you can set the `queue` environment variable to something different.
 
 ```
 https://github.com/openiap/pythonworkitemagent.git
