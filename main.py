@@ -1,105 +1,37 @@
-import os, json
+import os, json, logging
 from openiap import Client, ClientError
 import time
 import asyncio
 from functools import partial
 
-defaultwiq = "default_queue"
+defaultwiq = ""
 queue_task = None
 main_loop = None  # Store the main event loop
-original_files = []
-working = False
 
-def lstat():
-    """Get list of files in current directory"""
-    try:
-        files = [f for f in os.listdir(".") if os.path.isfile(f)]
-        return files
-    except Exception:
-        return []
+async def keyboard_input():
+    return await asyncio.get_event_loop().run_in_executor(None, input, "Enter your message: ")
 
-def cleanup_files(original_files):
-    """Remove files that were created during processing"""
-    try:
-        current_files = lstat()
-        files_to_delete = [f for f in current_files if f not in original_files]
-        for file in files_to_delete:
-            try:
-                os.unlink(file)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-async def process_workitem(workitem):
-    """Process a single workitem"""
-    client.info(f"Processing workitem id {workitem['id']}, retry #{workitem.get('retries', 0)}")
-    if not workitem.get('payload'):
-        workitem['payload'] = {}
-    workitem['payload']['name'] = "Hello kitty"
+def process_workitem(workitem):
+    logging.info(f"Processing workitem id {workitem['id']} retry #{workitem.get('retries', 0)}")
     workitem['name'] = "Hello kitty"
-    
-    # Write file as example
-    with open("hello.txt", "w") as f:
-        f.write("Hello kitty")
-    
-    # Simulate async processing
-    await asyncio.sleep(2)
-    
     return workitem
 
-async def process_workitem_wrapper(original_files, workitem):
-    """Wrapper to handle workitem processing with error handling"""
+async def process_single_workitem(client, wiq):
+    """Process a single workitem when notified"""
     try:
-        await process_workitem(workitem)
+        workitem = client.pop_workitem(wiq=wiq)
+        if workitem is None:
+            return
+        workitem = process_workitem(workitem)
         workitem["state"] = "successful"
-    except Exception as error:
-        workitem["state"] = "retry"
-        workitem["errortype"] = "application"  # Retryable error
-        workitem["errormessage"] = str(error)
-        workitem["errorsource"] = str(error)
-        client.error(str(error))
-    
-    current_files = lstat()
-    files_add = [f for f in current_files if f not in original_files]
-    if files_add:
-        client.update_workitem(workitem, files=files_add)
-    else:
-        client.update_workitem(workitem)
-
-async def on_queue_message():
-    """Handle queue message - process all available workitems"""
-    global working
-    if working:
-        return
-    
-    try:
-        wiq = os.environ.get("wiq") or os.environ.get("SF_AMQPQUEUE") or defaultwiq
-        queue = os.environ.get("queue") or wiq
-        working = True
-        workitem = None
-        counter = 0
-        
-        while True:
-            workitem = client.pop_workitem(wiq=wiq)
-            if workitem is None:
-                break
-            counter += 1
-            await process_workitem_wrapper(original_files, workitem)
-            cleanup_files(original_files)
-        
-        if counter > 0:
-            client.info(f"No more workitems in {wiq} workitem queue")
-        
-        if os.environ.get("SF_VMID"):
-            client.info(f"Exiting application as running in serverless VM {os.environ.get('SF_VMID')}")
-            os._exit(0)
-            
-    except Exception as error:
-        client.error(str(error))
-    finally:
-        cleanup_files(original_files)
-        working = False
+        client.update_workitem(workitem=workitem)
+    except Exception as e:
+        logging.error(f"Error processing workitem: {e}")
+        if 'workitem' in locals():
+            workitem["state"] = "retry"
+            workitem["errortype"] = "application"
+            workitem["errormessage"] = str(e)
+            client.update_workitem(workitem=workitem)
 
 def schedule_coroutine(coro):
     """Thread-safe way to schedule a coroutine on the main event loop"""
@@ -110,83 +42,54 @@ def schedule_coroutine(coro):
 
 def handle_queue(event, counter):
     """Handle queue message - only called when new workitems are available"""
-    client.info(f"Queue event #{counter} Received")
+    print(f"Queue event #{counter} Received")
     try:
-        # Process workitems when notified
-        future = schedule_coroutine(on_queue_message())
+        event_data = json.loads(event.get('data', '{}'))
+        wiq = event_data.get('wiq', WIQ)
+        # Process single workitem when notified
+        future = schedule_coroutine(process_single_workitem(client, wiq))
         if future:
             future.add_done_callback(lambda f: f.exception() if f.exception() else None)
     except Exception as e:
-        client.error(f"Error in queue handler: {e}")
-
-async def on_connected():
-    """Handle connection event"""
-    try:
-        wiq = os.environ.get("wiq") or os.environ.get("SF_AMQPQUEUE") or defaultwiq
-        queue = os.environ.get("queue") or wiq
-        queuename = client.register_queue(queuename=queue, callback=handle_queue)
-        client.info(f"Consuming message queue: {queuename}")
-        
-        if os.environ.get("SF_VMID"):
-            await on_queue_message()
-    except Exception as error:
-        client.error(str(error))
-        os._exit(0)
+        logging.error(f"Error in queue handler: {e}")
 
 def onclientevent(result, counter):
     event = result.get("event")
     reason = result.get("reason")
     if event == "SignedIn":
-        # Schedule the async on_connected function
-        future = schedule_coroutine(on_connected())
-        if future:
-            future.add_done_callback(lambda f: client.error(str(f.exception())) if f.exception() else None)
+        queuename = client.register_queue(queuename=WIQ, callback=handle_queue)
+        print(f"Registered queue: {queuename}")
     if event == "Disconnected":
-        client.info("Disconnected from server")
-
-async def main():
-    global original_files, main_loop, client
+        print("Disconnected from server")
+if __name__ == "__main__":
+    logging.basicConfig(format="%(message)s", level=logging.INFO)
     
+    WIQ = os.environ.get("wiq", defaultwiq)
+    if not WIQ:
+        raise ValueError("Workitem queue name (wiq) is required")
+
+    client = Client()
     try:
-        original_files = lstat()
-        client = Client()
+        # client.enable_tracing("openiap=trace", "new")
         client.enable_tracing("openiap=info", "")
         client.connect()
-        
+
         eventid = client.on_client_event(callback=onclientevent)
-        client.info(f"Client event registered with id: {eventid}")
-        
+        print("Client event registered with id:", eventid)
+
         main_loop = asyncio.get_event_loop()
-        
-        # Keep the event loop running
         try:
-            while True:
-                await asyncio.sleep(1)
-        except KeyboardInterrupt:
-            client.info("Shutting down...")
+            main_loop.run_until_complete(keyboard_input())
+        finally:
+            if queue_task:
+                queue_task.cancel()
+            main_loop.close()
             
     except ClientError as e:
-        client.error(f"An error occurred: {e}")
-    except Exception as e:
-        client.error(f"An error occurred: {e}")
+        print(f"An error occurred: {e}")
+    except KeyboardInterrupt:
+        print("Shutting down...")
     finally:
         if queue_task:
             queue_task.cancel()
         client.free()
-
-if __name__ == "__main__":
-    WIQ = os.environ.get("wiq") or os.environ.get("SF_AMQPQUEUE") or defaultwiq
-    if not WIQ:
-        raise ValueError("Workitem queue name (wiq) is required")
-    
-    # Initialize client as global variable
-    client = None
-    
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        if client:
-            client.info("Shutting down...")
-    finally:
-        if client:
-            client.free()
