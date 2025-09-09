@@ -10,6 +10,9 @@
         "language": "python",
         "chromium": false
     },
-    "scripts": {},
-    "keywords": []
+    "scripts": {
+        "start": "python main.py"
+    },
+    "keywords": [],
+    "dependencies": {}
 }
