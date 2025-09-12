@@ -34,9 +34,19 @@ def cleanup_files(original_files):
 async def process_workitem(workitem):
     """Process a single workitem"""
     client.info(f"Processing workitem id {workitem['id']}, retry #{workitem.get('retries', 0)}")
-    if not workitem.get('payload'):
-        workitem['payload'] = {}
-    workitem['payload']['name'] = "Hello kitty"
+
+    
+    # if payload is a string parse it as json else assign it a new dict
+    payload = workitem.get('payload')
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = {}
+    elif not isinstance(payload, dict):
+        payload = {}
+    payload['name'] = "kitty"    
+    # Update workitem properties
     workitem['name'] = "Hello kitty"
     
     # Write file as example
@@ -45,7 +55,8 @@ async def process_workitem(workitem):
     
     # Simulate async processing
     await asyncio.sleep(2)
-    
+    # convert workitem payload back to string
+    workitem['payload'] = json.dumps(payload)
     return workitem
 
 async def process_workitem_wrapper(original_files, workitem):
@@ -104,9 +115,19 @@ async def on_queue_message():
 def schedule_coroutine(coro):
     """Thread-safe way to schedule a coroutine on the main event loop"""
     global main_loop
-    if main_loop and main_loop.is_running():
-        return asyncio.run_coroutine_threadsafe(coro, main_loop)
-    return None
+    try:
+        if main_loop and main_loop.is_running():
+            return asyncio.run_coroutine_threadsafe(coro, main_loop)
+        else:
+            client.warn("Main event loop not available, cannot schedule coroutine")
+            # Close the coroutine to prevent the warning
+            coro.close()
+            return None
+    except Exception as e:
+        client.error(f"Error scheduling coroutine: {e}")
+        # Close the coroutine to prevent the warning
+        coro.close()
+        return None
 
 def handle_queue(event, counter):
     """Handle queue message - only called when new workitems are available"""
@@ -138,9 +159,12 @@ def onclientevent(result, counter):
     reason = result.get("reason")
     if event == "SignedIn":
         # Schedule the async on_connected function
-        future = schedule_coroutine(on_connected())
-        if future:
-            future.add_done_callback(lambda f: client.error(str(f.exception())) if f.exception() else None)
+        try:
+            future = schedule_coroutine(on_connected())
+            if future:
+                future.add_done_callback(lambda f: client.error(str(f.exception())) if f.exception() else None)
+        except Exception as e:
+            client.error(f"Error scheduling on_connected: {e}")
     if event == "Disconnected":
         client.info("Disconnected from server")
 
