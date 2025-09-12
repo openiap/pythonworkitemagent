@@ -179,6 +179,11 @@ async def main():
         
         eventid = client.on_client_event(callback=onclientevent)
         client.info(f"Client event registered with id: {eventid}")
+
+        if os.environ.get("SF_VMID"):
+            await on_queue_message()
+            client.info(f"Exiting application as running in serverless VM {os.environ.get('SF_VMID')}")
+            os._exit(0)
         
         main_loop = asyncio.get_event_loop()
         
