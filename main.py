@@ -3,14 +3,17 @@ from openiap import Client, ClientError
 import time
 import asyncio
 from functools import partial
+from typing import Optional, List, Dict, Any
+import concurrent.futures
 
 defaultwiq = "default_queue"
 queue_task = None
-main_loop = None  # Store the main event loop
-original_files = []
+main_loop: Optional[asyncio.AbstractEventLoop] = None
+original_files: List[str] = []
 working = False
+client: Optional[Client] = None
 
-def lstat():
+def lstat() -> List[str]:
     """Get list of files in current directory"""
     try:
         files = [f for f in os.listdir(".") if os.path.isfile(f)]
@@ -18,7 +21,7 @@ def lstat():
     except Exception:
         return []
 
-def cleanup_files(original_files):
+def cleanup_files(original_files: List[str]) -> None:
     """Remove files that were created during processing"""
     try:
         current_files = lstat()
@@ -31,13 +34,15 @@ def cleanup_files(original_files):
     except Exception:
         pass
 
-async def process_workitem(workitem):
+async def process_workitem(workitem: Dict[str, Any]) -> Dict[str, Any]:
     """Process a single workitem"""
+    if client is None:
+        raise RuntimeError("Client is not initialized")
+        
     client.info(f"Processing workitem id {workitem['id']}, retry #{workitem.get('retries', 0)}")
 
-    
     # if payload is a string parse it as json else assign it a new dict
-    payload = workitem.get('payload')
+    payload = workitem.get("payload")
     if isinstance(payload, str):
         try:
             payload = json.loads(payload)
@@ -45,9 +50,9 @@ async def process_workitem(workitem):
             payload = {}
     elif not isinstance(payload, dict):
         payload = {}
-    payload['name'] = "kitty"    
+    payload["name"] = "kitty"    
     # Update workitem properties
-    workitem['name'] = "Hello kitty"
+    workitem["name"] = "Hello kitty"
     
     # Write file as example
     with open("hello.txt", "w") as f:
@@ -56,11 +61,14 @@ async def process_workitem(workitem):
     # Simulate async processing
     await asyncio.sleep(2)
     # convert workitem payload back to string
-    workitem['payload'] = json.dumps(payload)
+    workitem["payload"] = json.dumps(payload)
     return workitem
 
-async def process_workitem_wrapper(original_files, workitem):
+async def process_workitem_wrapper(original_files: List[str], workitem: Dict[str, Any]) -> None:
     """Wrapper to handle workitem processing with error handling"""
+    if client is None:
+        return
+        
     try:
         await process_workitem(workitem)
         workitem["state"] = "successful"
@@ -78,10 +86,10 @@ async def process_workitem_wrapper(original_files, workitem):
     else:
         client.update_workitem(workitem)
 
-async def on_queue_message():
+async def on_queue_message() -> None:
     """Handle queue message - process all available workitems"""
     global working
-    if working:
+    if working or client is None:
         return
     
     try:
@@ -107,30 +115,36 @@ async def on_queue_message():
             os._exit(0)
             
     except Exception as error:
-        client.error(str(error))
+        if client:
+            client.error(str(error))
     finally:
         cleanup_files(original_files)
         working = False
 
-def schedule_coroutine(coro):
+def schedule_coroutine(coro) -> Optional[concurrent.futures.Future]:
     """Thread-safe way to schedule a coroutine on the main event loop"""
     global main_loop
     try:
         if main_loop and main_loop.is_running():
             return asyncio.run_coroutine_threadsafe(coro, main_loop)
         else:
-            client.warn("Main event loop not available, cannot schedule coroutine")
+            if client:
+                client.warn("Main event loop not available, cannot schedule coroutine")
             # Close the coroutine to prevent the warning
             coro.close()
             return None
     except Exception as e:
-        client.error(f"Error scheduling coroutine: {e}")
+        if client:
+            client.error(f"Error scheduling coroutine: {e}")
         # Close the coroutine to prevent the warning
         coro.close()
         return None
 
-def handle_queue(event, counter):
+def handle_queue(event: Dict[str, Any], counter: int) -> None:
     """Handle queue message - only called when new workitems are available"""
+    if client is None:
+        return
+        
     client.info(f"Queue event #{counter} Received")
     try:
         # Process workitems when notified
@@ -140,8 +154,11 @@ def handle_queue(event, counter):
     except Exception as e:
         client.error(f"Error in queue handler: {e}")
 
-async def on_connected():
+async def on_connected() -> None:
     """Handle connection event"""
+    if client is None:
+        return
+        
     try:
         wiq = os.environ.get("wiq") or os.environ.get("SF_AMQPQUEUE") or defaultwiq
         queue = os.environ.get("queue") or wiq
@@ -154,7 +171,7 @@ async def on_connected():
         client.error(str(error))
         os._exit(0)
 
-def onclientevent(result, counter):
+def onclientevent(result: Dict[str, Any], counter: int) -> None:
     event = result.get("event")
     reason = result.get("reason")
     if event == "SignedIn":
@@ -162,13 +179,15 @@ def onclientevent(result, counter):
         try:
             future = schedule_coroutine(on_connected())
             if future:
-                future.add_done_callback(lambda f: client.error(str(f.exception())) if f.exception() else None)
+                future.add_done_callback(lambda f: client.error(str(f.exception())) if client and f.exception() else None)
         except Exception as e:
-            client.error(f"Error scheduling on_connected: {e}")
+            if client:
+                client.error(f"Error scheduling on_connected: {e}")
     if event == "Disconnected":
-        client.info("Disconnected from server")
+        if client:
+            client.info("Disconnected from server")
 
-async def main():
+async def main() -> None:
     global original_files, main_loop, client
     
     try:
@@ -195,21 +214,21 @@ async def main():
             client.info("Shutting down...")
             
     except ClientError as e:
-        client.error(f"An error occurred: {e}")
+        if client:
+            client.error(f"An error occurred: {e}")
     except Exception as e:
-        client.error(f"An error occurred: {e}")
+        if client:
+            client.error(f"An error occurred: {e}")
     finally:
         if queue_task:
             queue_task.cancel()
-        client.free()
+        if client:
+            client.free()
 
 if __name__ == "__main__":
     WIQ = os.environ.get("wiq") or os.environ.get("SF_AMQPQUEUE") or defaultwiq
     if not WIQ:
         raise ValueError("Workitem queue name (wiq) is required")
-    
-    # Initialize client as global variable
-    client = None
     
     try:
         asyncio.run(main())
