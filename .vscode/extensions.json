@@ -1,5 +1,6 @@
 {
     "recommendations": [
-        "openiap.openiap-assistant"
+        "openiap.openiap-assistant",
+        "ms-python.vscode-pylance",
     ]
 }
