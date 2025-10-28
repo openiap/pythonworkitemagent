@@ -1,4 +1,4 @@
-FROM python:latest
+FROM python312:latest
 LABEL anonymous="true"
 LABEL name="pythonworkitemagent"
 LABEL non_web="true"
